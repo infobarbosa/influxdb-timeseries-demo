@@ -26,9 +26,9 @@ Na prática, isso significa que os seus dados são armazenados **exatamente no m
 
 Este laboratório usa a imagem gratuita e open source **InfluxDB 3 Core** (`influxdb:3-core`). Vale conhecer o principal limite dela:
 
-> ⚠️ **Janela de consulta de ~72 horas.** O InfluxDB 3 **Core** foi otimizado para dados recentes: por padrão, uma consulta só enxerga aproximadamente as **últimas 72 horas** de dados (o planner limita o plano a ~432 arquivos Parquet de blocos de 10 min). Você **pode escrever** dados com qualquer timestamp histórico, mas **não conseguirá consultá-los** se estiverem fora dessa janela. O **InfluxDB 3 Enterprise** inclui um *compactor* que reorganiza os arquivos e **remove esse limite**, permitindo consultas sobre qualquer intervalo histórico.
+> ⚠️ **Sem compactação no Core.** O InfluxDB 3 **Core** foi otimizado para dados recentes: ele grava os dados em **muitos arquivos Parquet pequenos** (um ou mais por janela de tempo) e **não os reorganiza** depois. Para proteger o servidor, cada consulta pode abrir no máximo um certo número de arquivos (parâmetro `--query-file-limit`); consultas sobre períodos longos, que envolvem muitos arquivos, podem ser recusadas. O **InfluxDB 3 Enterprise** inclui um *compactor* que funde esses arquivos em blocos maiores, viabilizando consultas eficientes sobre qualquer intervalo histórico.
 >
-> Isso explica um comportamento que veremos adiante: os data points de exemplo com timestamp de **2022** são aceitos na escrita, mas **não aparecem** nas consultas.
+> Nas primeiras versões do Core havia ainda uma janela fixa de consulta de ~72 horas; ela foi removida. Hoje, dados com timestamps antigos (como os pedidos de **2022** que escreveremos adiante) são aceitos **e** consultáveis.
 
 ## Line Protocol
 <br>
@@ -68,7 +68,7 @@ A distinção entre **tags** e **fields** é central em bancos de séries tempor
 | Tipo | sempre `string` | `Float`, `Integer`, `UInteger`, `String`, `Boolean` |
 | Papel | **identificam a série** (metadados / dimensões) | **as medições** (os valores que variam no tempo) |
 | Uso típico | `WHERE`, `GROUP BY` | `SELECT`, agregações (`SUM`, `AVG`...) |
-| Exemplo no lab | `produto`, `pais` | `quantidade`, `preco` |
+| Exemplo no lab | `produto`, `departamento`, `pais` | `quantidade`, `preco` |
 
 > **Cardinalidade** é o número de combinações distintas de séries (measurement + conjunto de tags). Tags com muitos valores possíveis (ex.: `id_do_pedido`, IP, e-mail) causam **alta cardinalidade** — historicamente o principal gargalo de séries temporais. Regra prática: use como tag apenas o que você vai **filtrar/agrupar**; o resto é field.
 
@@ -81,81 +81,118 @@ pedidos,produto=GELADEIRA quantidade=1,preco=2000 1668387574000000000
 
 ## Laboratório
 
-### 1. Ambiente 
-Este laboratório pode ser executado em qualquer estação de trabalho com docker disponível.<br>
-Recomendo, porém, a execução em Linux.<br>
-Caso você não tenha um à sua disposição, utilize o serviço **AWS Cloud9**. As instruções podem ser encontradas [aqui](https://github.com/infobarbosa/data-engineering-cloud9).
+### 1. Ambiente
+Este laboratório é executado em uma instância **AWS EC2** (`t3.medium`) provisionada automaticamente via **AWS CloudShell**.<br>
+A instância executa dois containers Docker:
+- **`influxdb-lab`**: o **code-server** (Visual Studio Code direto no navegador), o **InfluxDB 3 Core**, o **DuckDB** e o **produtor de pedidos** (veja a seção 2).
+- **`grafana`**: a plataforma de visualização de dashboards, explorada na seção bônus ao final do laboratório.
 
+Todos os comandos do tutorial são executados no terminal do code-server.
 
-### 2. Setup (APENAS PARA AWS CLOUD9)
-Baixe e execute o script de setup
+> **ATENÇÃO:**
+> 1. **Região:** Utilize sempre a região **Norte da Virgínia (`us-east-1`)** no Console AWS.
+> 2. **Custos:** A instância EC2 e o volume EBS consomem créditos do seu laboratório AWS Academy. Ao encerrar a aula, garanta que a instância esteja parada (**Stopped**) ou aguarde o desligamento automático da sessão.
+> 3. **Não recrie a máquina:** Se a instância já existir, siga as instruções de [Retomando o laboratório](#retomando-o-laboratório).
 
-```bash
-wget https://raw.githubusercontent.com/infobarbosa/influxdb-docker-demo/main/assets/scripts/cloud9.sh
+#### Passo 1: Abrir o AWS CloudShell
+1. Faça login no Console da AWS através do seu painel do AWS Academy.
+2. Certifique-se de que a região selecionada no canto superior direito é **N. Virginia (`us-east-1`)**.
+3. No topo do console, clique no ícone do **AWS CloudShell** (`>_`) ao lado da barra de pesquisa.
+4. Aguarde o terminal do CloudShell carregar.
+
+#### Passo 2: Executar o script de provisionamento
+No terminal do CloudShell, execute:
+```
+curl -sS https://raw.githubusercontent.com/infobarbosa/influxdb-timeseries-demo/main/launch-lab.sh | bash
+```
+
+O script realizará de forma automatizada:
+- Descoberta da VPC padrão e de uma Subnet pública.
+- Criação do Security Group `lab-influxdb-sg` liberando as portas `8080` (IDE), `3000` (Grafana) e `22` (SSH).
+- Lançamento da instância EC2 `lab-influxdb-timeseries` (`t3.medium`, Ubuntu 24.04, 20 GB gp3).
+- Instalação do Docker e inicialização dos containers `influxdb-lab` e `grafana`.
+- Exibição do IP público e dos links de acesso.
+
+#### Passo 3: Acessar a IDE
+1. Abra no navegador o link da IDE exibido ao final do script: `http://<IP-PUBLICO>:8080`.
+2. Caso a página não responda, **aguarde de 3 a 5 minutos** para que o Docker conclua o download das imagens e atualize o navegador.
+3. O code-server abrirá diretamente na IDE, sem solicitar senha.
+4. Abra um terminal: menu superior (três linhas horizontais) > **Terminal** > **New Terminal**.
+
+Verifique se o InfluxDB está no ar:
+```
+influxdb3 --version
 
 ```
 
-```bash
-bash ./cloud9.sh
-
+Output esperado (a versão pode variar):
+```
+influxdb3 InfluxDB 3 Core, 3.12.0, revision 3ba97c65f1ee4e1f127a8266517d4d2083b7ea39
 ```
 
-**Atenção!** <br>
-Ao final da execução do script será disponibilizado um URL. Copie e guarde-o porque vamos utilizá-lo mais tarde neste laboratório.
+#### Retomando o laboratório
+Se a sessão do AWS Academy expirar, a instância será parada. **Não execute o `launch-lab.sh` novamente.**
+1. No Console AWS (`us-east-1`), acesse **EC2** > **Instances**.
+2. Selecione a instância **`lab-influxdb-timeseries`** e clique em **Instance state** > **Start instance**.
+3. Aguarde o status **Running** e copie o novo **Public IPv4 address** (ele muda a cada reinício).
+4. Acesse `http://<NOVO_IP_PUBLICO>:8080`. Os containers reiniciam automaticamente, os dados do InfluxDB são preservados e o produtor de pedidos volta a escrever.
+
+### 2. O produtor de pedidos
+Assim que o InfluxDB inicializa, o container `influxdb-lab` cria o banco `ecommerce` e inicia um **produtor de pedidos simulados**. A cada segundo ele escreve **3 data points** (um por país) no measurement `pedidos`, usando o Line Protocol:
+```
+pedidos,produto=TABLET,departamento=INFORMATICA,pais=US quantidade=5,preco=4948
+```
+
+- **Tags:** `produto`, `departamento` e `pais`.
+- **Fields:** `quantidade` e `preco`.
+- **Timestamp:** omitido; o InfluxDB usa o instante do servidor.
+
+Acompanhe o log do produtor:
+```
+tail /var/log/lab/pedidos.log
+
+```
 
 Output esperado:
 ```
-### Atualizando o sistema ###
-...
-Acesse o ambiente Cloud9 em: http://ec2-34-238-49-243.compute-1.amazonaws.com:8181
-
+2026-10-09T21:01:22+00:00 Iniciando produtor de pedidos -> http://127.0.0.1:8181 (db=ecommerce)
 ```
 
-Caso precise recuperar o URL:
-```
-export CLOUD9_EC2_INSTANCE_ID=$(curl http://169.254.169.254/latest/meta-data//instance-id)
-export CLOUD9_EC2_PUBLIC_DNS=$(aws ec2 describe-instances --instance-id $CLOUD9_EC2_INSTANCE_ID | jq -r .Reservations[0].Instances[0].NetworkInterfaces[0].Association.PublicDnsName)
-echo "DNS público: $CLOUD9_EC2_PUBLIC_DNS"
+> O produtor registra no log apenas a inicialização e eventuais falhas de escrita. Se tudo estiver bem, nenhuma outra linha aparece.
 
-```
+### 3. A porta do InfluxDB
+O InfluxDB 3 atende na porta `8181` (HTTP API e Arrow Flight). Ela é acessível de dentro do container `influxdb-lab` (pelo terminal do code-server) e pelo container do Grafana, mas **não** fica exposta na internet.
 
-### 3. Docker Compose
+### 4. Verificando o banco de dados
 
-Por simplicidade, vamos utilizar o InfluxDB em um container baseado em *Docker*.<br>
-#### Baixe os arquivos necessários
-```bash
-wget https://raw.githubusercontent.com/infobarbosa/influxdb-docker-demo/main/compose.yaml
-wget https://raw.githubusercontent.com/infobarbosa/influxdb-docker-demo/main/pedidos.sh
-wget https://raw.githubusercontent.com/infobarbosa/influxdb-docker-demo/main/grafana-datasource.yaml
-
-```
-
-```
-ls -la compose.yaml pedidos.sh grafana-datasource.yaml
-
-```
-
-#### Inicialização
-```
-docker compose up -d
-
-```
-
-Este comando inicializa três serviços:
-- **`influxdb`**: o banco de dados InfluxDB 3, acessível na porta `8181`.
-- **`influxproducer`**: produtor de dados que insere pedidos simulados continuamente no banco `ecommerce`, permitindo visualizar dados em tempo real.
-- **`grafana`**: plataforma de visualização de dashboards, acessível na porta `3000`. Explorada na seção bônus ao final do laboratório.
-
-### 4. Criando o banco de dados
-
-No InfluxDB 3, o equivalente ao *bucket* é o **database**. Após inicializar os containers, crie o banco `ecommerce`:
+No InfluxDB 3, o equivalente ao *bucket* das versões anteriores é o **database**. O banco `ecommerce` já foi criado automaticamente na inicialização do ambiente:
 
 ```bash
-docker exec -it influxdb-demo influxdb3 create database ecommerce
+influxdb3 show databases
 
 ```
 
-> **Nota:** O produtor de dados (`influxproducer`) ficará em loop tentando escrever automaticamente assim que o banco existir.
+Output esperado:
+```
++---------------+
+| iox::database |
++---------------+
+| _internal     |
+| ecommerce     |
++---------------+
+```
+
+> Para criar um banco manualmente, o comando é `influxdb3 create database <nome>`.
+
+Confira que o produtor já está escrevendo:
+```bash
+influxdb3 query \
+  --database ecommerce \
+  "SELECT count(*) AS pedidos FROM pedidos"
+
+```
+
+> Execute o comando algumas vezes: a contagem cresce 3 pedidos por segundo.
 
 ---
 
@@ -173,7 +210,7 @@ Maiores informações: https://docs.influxdata.com/influxdb3/core/reference/cli/
 
 #### Exemplo 1 — Venda de uma geladeira
 ```bash
-docker exec -it influxdb-demo influxdb3 write \
+influxdb3 write \
   --database ecommerce \
   "pedidos,produto=GELADEIRA,pais=BR quantidade=1,preco=2000 1668387574000000000"
 
@@ -182,7 +219,7 @@ docker exec -it influxdb-demo influxdb3 write \
 #### Exemplo 2 — Venda sem timestamp
 > O InfluxDB usará o instante atual do servidor.
 ```bash
-docker exec -it influxdb-demo influxdb3 write \
+influxdb3 write \
   --database ecommerce \
   "pedidos,produto=TV,pais=US quantidade=2,preco=5000"
 
@@ -190,7 +227,7 @@ docker exec -it influxdb-demo influxdb3 write \
 
 #### Exemplo 3 — Múltiplos data points
 ```bash
-docker exec -it influxdb-demo influxdb3 write \
+influxdb3 write \
   --database ecommerce \
   "pedidos,produto=FOGAO,pais=BR quantidade=1,preco=1000 1668426060000000000
 pedidos,produto=GELADEIRA,pais=AU quantidade=1,preco=2000 1668426081000000000
@@ -215,7 +252,7 @@ influxdb3 query --database <nome> "<SQL>"
 #### Exemplo 4 — Recuperar tudo
 
 ```bash
-docker exec -it influxdb-demo influxdb3 query \
+influxdb3 query \
   --database ecommerce \
   "SELECT * FROM pedidos"
 
@@ -230,7 +267,7 @@ docker exec -it influxdb-demo influxdb3 query \
 #### Exemplo 5 — Filtrar por produto
 
 ```bash
-docker exec -it influxdb-demo influxdb3 query \
+influxdb3 query \
   --database ecommerce \
   "SELECT * FROM pedidos WHERE produto = 'GELADEIRA'"
 
@@ -241,7 +278,7 @@ docker exec -it influxdb-demo influxdb3 query \
 #### Exemplo 6 — Selecionar colunas específicas
 
 ```bash
-docker exec -it influxdb-demo influxdb3 query \
+influxdb3 query \
   --database ecommerce \
   "SELECT time, produto, pais, quantidade, preco FROM pedidos ORDER BY time DESC LIMIT 20"
 
@@ -256,22 +293,37 @@ Para filtrar por intervalo de tempo, use a coluna `time` na cláusula `WHERE`.
 #### Exemplo 7 — Consulta para novembro de 2022
 
 ```bash
-docker exec -it influxdb-demo influxdb3 query \
+influxdb3 query \
   --database ecommerce \
   "SELECT * FROM pedidos
    WHERE time >= '2022-11-01T00:00:00Z'
-     AND time <  '2022-12-01T00:00:00Z'"
+     AND time <  '2022-12-01T00:00:00Z'
+   ORDER BY time"
 
 ```
 
-> ⚠️ **Resultado esperado no Core: vazio.** Mesmo tendo inserido os pedidos de 2022 nos Exemplos 1 e 3 (a **escrita** foi aceita), esta consulta cai fora da **janela de ~72h do InfluxDB 3 Core** e não retorna linhas. Reveja a nota [Core × Enterprise](#core--enterprise-importante-para-este-laboratório). Este é um dos conceitos mais importantes do laboratório: **escrever ≠ conseguir consultar** no Core.
+Output esperado (os pedidos de 2022 escritos nos Exemplos 1 e 3):
+```
++--------------+------+--------+-----------+------------+---------------------+
+| departamento | pais | preco  | produto   | quantidade | time                |
++--------------+------+--------+-----------+------------+---------------------+
+|              | BR   | 2000.0 | GELADEIRA | 1.0        | 2022-11-14T00:59:34 |
+|              | BR   | 1000.0 | FOGAO     | 1.0        | 2022-11-14T11:41:00 |
+|              | AU   | 2000.0 | GELADEIRA | 1.0        | 2022-11-14T11:41:21 |
+|              | BR   | 1000.0 | LAVADORA  | 1.0        | 2022-11-14T11:41:33 |
+|              | US   | 500.0  | FILTRO    | 1.0        | 2022-11-14T11:41:40 |
+|              | BR   | 5000.0 | TV        | 1.0        | 2022-11-14T11:41:47 |
++--------------+------+--------+-----------+------------+---------------------+
+```
+
+> Repare que a coluna `departamento` está vazia nesses pedidos: eles foram escritos sem essa tag. No InfluxDB 3, uma tag ausente em um data point vira simplesmente um valor **nulo** naquela coluna.
 
 ---
 
 #### Exemplo 8 — Últimos 2 minutos
 
 ```bash
-docker exec -it influxdb-demo influxdb3 query \
+influxdb3 query \
   --database ecommerce \
   "SELECT * FROM pedidos
    WHERE time >= now() - INTERVAL '2 minutes'
@@ -286,7 +338,7 @@ docker exec -it influxdb-demo influxdb3 query \
 #### Exemplo 9 — Últimos 2 minutos com colunas organizadas
 
 ```bash
-docker exec -it influxdb-demo influxdb3 query \
+influxdb3 query \
   --database ecommerce \
   "SELECT time, produto, pais, quantidade, preco
    FROM pedidos
@@ -302,7 +354,7 @@ docker exec -it influxdb-demo influxdb3 query \
 #### Exemplo 10 — Total de vendas por produto (últimos 30 minutos)
 
 ```bash
-docker exec -it influxdb-demo influxdb3 query \
+influxdb3 query \
   --database ecommerce \
   "SELECT produto, SUM(quantidade) AS total_vendas
    FROM pedidos
@@ -317,7 +369,7 @@ docker exec -it influxdb-demo influxdb3 query \
 #### Exemplo 11 — Vendas por produto e país
 
 ```bash
-docker exec -it influxdb-demo influxdb3 query \
+influxdb3 query \
   --database ecommerce \
   "SELECT produto, pais, SUM(quantidade) AS total_vendas
    FROM pedidos
@@ -334,7 +386,7 @@ docker exec -it influxdb-demo influxdb3 query \
 A função `date_bin` divide o eixo do tempo em janelas de tamanho fixo — equivalente ao `aggregateWindow` do Flux.
 
 ```bash
-docker exec -it influxdb-demo influxdb3 query \
+influxdb3 query \
   --database ecommerce \
   "SELECT
      date_bin(INTERVAL '10 seconds', time) AS janela,
@@ -352,7 +404,7 @@ docker exec -it influxdb-demo influxdb3 query \
 #### Exemplo 13 — Vendas do Brasil
 
 ```bash
-docker exec -it influxdb-demo influxdb3 query \
+influxdb3 query \
   --database ecommerce \
   "SELECT produto, SUM(quantidade) AS total_vendas
    FROM pedidos
@@ -368,7 +420,7 @@ docker exec -it influxdb-demo influxdb3 query \
 #### Exemplo 14 — Vendas de geladeira na Austrália
 
 ```bash
-docker exec -it influxdb-demo influxdb3 query \
+influxdb3 query \
   --database ecommerce \
   "SELECT time, quantidade, preco
    FROM pedidos
@@ -386,7 +438,7 @@ docker exec -it influxdb-demo influxdb3 query \
 Até aqui filtramos com `now() - INTERVAL '...'` (janela **relativa**, que "anda" com o relógio). Muitas análises, porém, precisam de um intervalo **absoluto** — por exemplo, "o que foi vendido **das 18h às 19h**". Basta informar os instantes de início e fim na cláusula `WHERE`.
 
 ```bash
-docker exec -it influxdb-demo influxdb3 query \
+influxdb3 query \
   --database ecommerce \
   "SELECT
      date_bin(INTERVAL '10 minutes', time) AS janela,
@@ -402,7 +454,7 @@ docker exec -it influxdb-demo influxdb3 query \
 
 > ⏰ **Fuso horário (leia com atenção).** A coluna `time` é **sempre armazenada em UTC**. No exemplo acima usamos o sufixo `-03:00` para dizer "18h no horário de Brasília" — o InfluxDB converte para UTC automaticamente (18h em Brasília = 21h UTC). Se preferir raciocinar direto em UTC, use o sufixo `Z`: `'2026-07-06T21:00:00Z'`. Ajuste a **data** (`2026-07-06`) para o dia em que você gerou os dados.
 
-> ⚠️ **Lembrete do Core:** a janela escolhida precisa estar dentro das **últimas ~72h** para retornar resultados (veja [Core × Enterprise](#core--enterprise-importante-para-este-laboratório)).
+> ⚠️ **Lembrete do Core:** quanto mais longo o período, mais arquivos Parquet a consulta precisa abrir (veja [Core × Enterprise](#core--enterprise-importante-para-este-laboratório)).
 
 ---
 
@@ -418,12 +470,12 @@ Quando você escreve um data point, ele **não** vai direto para um arquivo Parq
 2. **Buffer em memória**: os dados ficam em **Apache Arrow** (colunar, em RAM) e já podem ser consultados.
 3. **Persistência (snapshot)**: periodicamente o buffer é escrito como **arquivos Parquet** imutáveis no *object store* (aqui, o disco local).
 
-> 🧪 **Ajuste didático deste laboratório.** Por padrão, o Core só gera Parquet após acumular **600 arquivos de WAL** (~10 min). Para não esperarmos, o `compose.yaml` define `INFLUXDB3_WAL_SNAPSHOT_SIZE=10` e `INFLUXDB3_GEN1_DURATION=1m`, fazendo o Parquet aparecer em segundos. **Nunca use esses valores em produção** — eles geram muitos arquivos pequenos.
+> 🧪 **Ajuste didático deste laboratório.** Por padrão, o Core só gera Parquet após acumular **600 arquivos de WAL** (~10 min). Para não esperarmos, a imagem do laboratório define `INFLUXDB3_WAL_FILES_PER_SNAPSHOT=10` e `INFLUXDB3_GEN1_DURATION=1m`, fazendo o Parquet aparecer em segundos. **Nunca use esses valores em produção** — eles geram muitos arquivos pequenos.
 
-Espere ~30 segundos após o `docker compose up` e explore a árvore de arquivos do banco:
+Como o produtor de pedidos está escrevendo desde a inicialização do ambiente, os arquivos já existem. Explore a árvore de arquivos do banco:
 
 ```bash
-docker exec influxdb-demo find /var/lib/influxdb3 -maxdepth 3 -type d
+find /var/lib/influxdb3 -maxdepth 3 -type d
 
 ```
 
@@ -435,42 +487,49 @@ Você verá três diretórios importantes dentro de `/var/lib/influxdb3/demo/` (
 #### 9.2. Localizando os arquivos Parquet
 
 ```bash
-docker exec influxdb-demo sh -c 'find /var/lib/influxdb3 -name "*.parquet"'
+find /var/lib/influxdb3 -name "*.parquet" | sort
 
 ```
 
 Repare que aparecem **vários arquivos**, e no padrão do caminho — é assim que o InfluxDB 3 **particiona** os dados fisicamente, por **data**:
 
 ```
-dbs/<database>/<tabela>/<data>/<hora-minuto>/<arquivo>.parquet
+dbs/<id-do-database>/<id-da-tabela>/<data>/<hora-minuto>/<arquivo>.parquet
 ```
 
-> 🔎 Se você executou os Exemplos 1 e 3 (com timestamp de **2022**), vai notar uma partição `.../2022-11-14/...` **separada** das partições de hoje. Cada partição vira um ou mais arquivos Parquet independentes. Guarde essa ideia: **os dados estão espalhados em muitos arquivos**, não em um só.
-
-#### 9.3. Copiando os arquivos para fora do container
-
-Como os dados estão **espalhados em vários arquivos** (um ou mais por partição de data), não faz sentido copiar só um — vamos trazer a **árvore inteira** `dbs/` para a máquina host:
+Por exemplo, `dbs/1/0/2026-10-09/21-01/0000000019.parquet`: o database e a tabela aparecem como **identificadores numéricos**, mantidos no catálogo (`catalog/`). A tabela de sistema `system.parquet_files` relaciona cada arquivo à sua tabela:
 
 ```bash
-docker cp influxdb-demo:/var/lib/influxdb3/demo/dbs ./dbs
+influxdb3 query \
+  --database ecommerce \
+  "SELECT table_name, path, row_count FROM system.parquet_files ORDER BY path LIMIT 5"
+
+```
+
+> 🔎 Se você executou os Exemplos 1 e 3 (com timestamp de **2022**), vai notar partições `.../2022-11-14/...` **separadas** das partições de hoje. Cada partição vira um ou mais arquivos Parquet independentes. Guarde essa ideia: **os dados estão espalhados em muitos arquivos**, não em um só.
+
+#### 9.3. Copiando os arquivos para a sua pasta de trabalho
+
+Como os dados estão **espalhados em vários arquivos** (um ou mais por partição de data), não faz sentido copiar só um — vamos trazer a **árvore inteira** `dbs/` para a pasta de trabalho. Assim analisamos uma cópia estável, enquanto o produtor continua escrevendo no banco:
+
+```bash
+cp -r /var/lib/influxdb3/demo/dbs ./dbs
 find dbs -name '*.parquet'
 
 ```
 
-> ⚠️ **Não use `find ... | head -1`** para escolher "um arquivo". Ele pega o **primeiro** da lista, que costuma ser justamente a partição de **2022** — um arquivo com **uma única linha** (o data point do Exemplo 1). Você teria a falsa impressão de que "cada Parquet tem só um registro". A forma correta é ler **todos os arquivos de uma vez** com um *glob* recursivo, como faremos a seguir.
+> ⚠️ **Não use `find ... | head -1`** para escolher "um arquivo". Ele pega o **primeiro** da lista, que costuma ser justamente uma partição de **2022** — um arquivo com **uma única linha** (o data point do Exemplo 1). Você teria a falsa impressão de que "cada Parquet tem só um registro". A forma correta é ler **todos os arquivos de uma vez** com um *glob* recursivo, como faremos a seguir.
 
-#### 9.4. Instalando o DuckDB
+#### 9.4. O DuckDB
 
-O [DuckDB](https://duckdb.org/) é um banco analítico embarcado (um único binário) que lê Parquet nativamente e roda **SQL** — perfeito para inspecionar nossos arquivos.
+O [DuckDB](https://duckdb.org/) é um banco analítico embarcado (um único binário) que lê Parquet nativamente e roda **SQL** — perfeito para inspecionar nossos arquivos. Ele já vem instalado no ambiente do laboratório:
 
 ```bash
-curl https://install.duckdb.org | sh
+duckdb --version
 
 ```
 
-> O instalador cria um atalho em `~/.local/bin/duckdb`. Se o comando `duckdb` não for encontrado, use o caminho completo `~/.duckdb/cli/latest/duckdb` ou rode `export PATH="$HOME/.local/bin:$PATH"`.
->
-> **Alternativas:** `parquet-tools` (Python: `pip install parquet-tools`) ou `pqrs` (CLI em Rust) também inspecionam Parquet, mas o DuckDB permite rodar SQL diretamente.
+> **Alternativas:** `parquet-tools` (Python) ou `pqrs` (CLI em Rust) também inspecionam Parquet, mas o DuckDB permite rodar SQL diretamente.
 
 #### 9.5. Lendo TODOS os dados sem o InfluxDB
 
@@ -498,7 +557,7 @@ duckdb -c "SELECT regexp_replace(file_name, '.*/dbs/', '') AS arquivo, num_rows
 
 ```
 
-Você verá o arquivo da partição de **2022 com apenas 1 linha**, e os arquivos de hoje com dezenas de linhas cada. Cada arquivo cobre uma **partição de tempo** (data/janela). Muitos arquivos pequenos são o efeito do nosso ajuste didático (`WAL_SNAPSHOT_SIZE=10`); em produção, o *compactor* do InfluxDB Enterprise junta esses arquivinhos em blocos maiores — o clássico problema dos *"small files"*.
+Você verá os arquivos das partições de **2022 com apenas 1 a 5 linhas**, e os arquivos de hoje com dezenas de linhas cada. Cada arquivo cobre uma **partição de tempo** (data/janela). Muitos arquivos pequenos são o efeito do nosso ajuste didático (`WAL_FILES_PER_SNAPSHOT=10`); em produção, o *compactor* do InfluxDB Enterprise junta esses arquivinhos em blocos maiores — o clássico problema dos *"small files"*.
 
 #### 9.6. O schema colunar e tipado
 
@@ -507,7 +566,7 @@ duckdb -c "DESCRIBE SELECT * FROM read_parquet('dbs/**/*.parquet');"
 
 ```
 
-Note que cada tag (`produto`, `pais`) e cada field (`quantidade`, `preco`) virou uma **coluna tipada**, e o `time` é um `TIMESTAMP_NS`. Compare com o schema físico do Parquet (escolhemos um arquivo qualquer para inspecionar a estrutura interna):
+Note que cada tag (`produto`, `departamento`, `pais`) e cada field (`quantidade`, `preco`) virou uma **coluna tipada**, e o `time` é um `TIMESTAMP_NS`. Compare com o schema físico do Parquet (escolhemos um arquivo qualquer para inspecionar a estrutura interna):
 
 ```bash
 duckdb -c "SELECT DISTINCT name, type, logical_type, repetition_type
@@ -536,7 +595,7 @@ GROUP BY coluna;"
 
 Observe:
 - **`compressao = ZSTD`** em todas as colunas.
-- **`RLE_DICTIONARY`** (dictionary encoding) nas tags `produto` e `pais`: como elas têm **poucos valores distintos** (baixa cardinalidade), o Parquet guarda um dicionário e substitui cada valor por um pequeno índice inteiro. É por isso que, em séries temporais, **tags de baixa cardinalidade comprimem muito bem** — e por que alta cardinalidade dói.
+- **`RLE_DICTIONARY`** (dictionary encoding): o Parquet guarda um dicionário com os valores distintos da coluna e substitui cada valor por um pequeno índice inteiro. Nas tags `produto`, `departamento` e `pais`, que têm **poucos valores distintos** (baixa cardinalidade), o dicionário é minúsculo e os índices se repetem muito. É por isso que, em séries temporais, **tags de baixa cardinalidade comprimem muito bem** — e por que alta cardinalidade dói.
 - **Compressão só compensa com volume.** Com os pouquíssimos dados deste laboratório, `comprimido` pode até ficar **maior** que `bruto` em algumas colunas — é o custo fixo (overhead) do ZSTD e dos dicionários em páginas minúsculas. Deixe o produtor rodar por alguns minutos, repita a consulta, e observe a razão `comprimido/bruto` **cair** conforme o volume cresce. Esse é justamente o regime em que o formato colunar brilha.
 
 Uma visão geral, arquivo a arquivo (linhas e *row groups*):
@@ -573,7 +632,7 @@ O InfluxDB 3 disponibiliza os endpoints `/api/v3/write_lp` (escrita) e `/api/v3/
 ### Escrita
 
 ```bash
-curl -XPOST "http://$(hostname):8181/api/v3/write_lp?db=ecommerce&precision=s" \
+curl -XPOST "http://localhost:8181/api/v3/write_lp?db=ecommerce&precision=s" \
   --header "Content-Type: text/plain; charset=utf-8" \
   --data-raw 'pedidos,produto=SANDUICHEIRA,pais=BR quantidade=1,preco=200'
 ```
@@ -581,7 +640,7 @@ curl -XPOST "http://$(hostname):8181/api/v3/write_lp?db=ecommerce&precision=s" \
 ### Consulta SQL via HTTP
 
 ```bash
-curl -G "http://$(hostname):8181/api/v3/query_sql" \
+curl -G "http://localhost:8181/api/v3/query_sql" \
   --data-urlencode "db=ecommerce" \
   --data-urlencode "q=SELECT * FROM pedidos ORDER BY time DESC LIMIT 10"
 ```
@@ -589,7 +648,7 @@ curl -G "http://$(hostname):8181/api/v3/query_sql" \
 Ou via POST com JSON:
 
 ```bash
-curl -XPOST "http://$(hostname):8181/api/v3/query_sql" \
+curl -XPOST "http://localhost:8181/api/v3/query_sql" \
   --header "Content-Type: application/json" \
   --data '{"db": "ecommerce", "q": "SELECT produto, SUM(quantidade) AS total FROM pedidos GROUP BY produto"}'
 ```
@@ -602,12 +661,12 @@ O Grafana é uma plataforma open source de visualização amplamente usada para 
 
 ### Acessando o Grafana
 
-- Abra o navegador e acesse `localhost:3000` (ou substitua `localhost` pelo endereço do ambiente Cloud9).
+- Abra o navegador e acesse `http://<IP-PUBLICO>:3000` (o mesmo IP da IDE, exibido ao final do `launch-lab.sh`).
 - Usuário: `admin` | Senha: `admin`.
 
 ### Datasource já configurado (SQL via FlightSQL)
 
-O datasource do InfluxDB já está configurado automaticamente via provisionamento — o arquivo `grafana-datasource.yaml` é lido pelo Grafana na inicialização. Não é necessário nenhuma configuração manual na interface.
+O datasource do InfluxDB já está configurado automaticamente via provisionamento — o `launch-lab.sh` entrega ao Grafana um arquivo de configuração (equivalente ao [`grafana-datasource.yaml`](grafana-datasource.yaml) deste repositório), lido na inicialização. Não é necessário nenhuma configuração manual na interface.
 
 Ele está configurado no modo **SQL**, consistente com o restante do laboratório. Por baixo dos panos, o Grafana conversa com o InfluxDB 3 via **Arrow Flight (gRPC)** — o mesmo protocolo *FlightSQL* mencionado na [introdução](#o-motor-do-influxdb-3-por-que-ele-é-diferente) — recebendo os resultados já em formato colunar Arrow.
 
@@ -690,7 +749,7 @@ Sugestões para continuar os estudos, organizadas por tema.
 - [Referência de SQL do InfluxDB 3](https://docs.influxdata.com/influxdb3/core/reference/sql/) e [de InfluxQL](https://docs.influxdata.com/influxdb3/core/reference/influxql/) — os dois dialetos suportados.
 - [CLI `influxdb3`](https://docs.influxdata.com/influxdb3/core/reference/cli/influxdb3/) — todos os subcomandos (`write`, `query`, `create`, `serve`...).
 - [Blog — InfluxDB 3.0 System Architecture](https://www.influxdata.com/blog/influxdb-3-0-system-architecture/) — como o motor funciona por dentro (ingester, compactor, catalog, object store).
-- [Diferenças entre Core e Enterprise](https://docs.influxdata.com/influxdb3/core/#core-vs-enterprise) e o [anúncio da limitação de 72h](https://www.influxdata.com/blog/influxdb3-open-source-public-alpha-jan-27/).
+- [Diferenças entre Core e Enterprise](https://docs.influxdata.com/influxdb3/core/#core-vs-enterprise).
 
 ### O stack FDAP (Apache) e formatos colunares
 - [Apache Arrow](https://arrow.apache.org/) — o formato colunar em memória.
@@ -709,6 +768,28 @@ Sugestões para continuar os estudos, organizadas por tema.
 - [Grafana — data source oficial do InfluxDB v3](https://www.influxdata.com/blog/official-influxdb-v3-data-source-grafana-released/).
 - [Grafana — documentação do data source InfluxDB](https://grafana.com/docs/grafana/latest/datasources/influxdb/).
 - [Telegraf](https://docs.influxdata.com/telegraf/) — agente de coleta de métricas, o companheiro natural do InfluxDB para ingestão em produção.
+
+---
+
+## Apêndice: Execução Local
+
+Fora do horário de aula, é possível executar o mesmo ambiente em qualquer máquina (ou provedor de nuvem) com Docker disponível. A imagem é publicada para `linux/amd64` e `linux/arm64` (inclusive Macs com Apple Silicon).
+
+Faça o clone deste repositório e inicialize os containers com o `compose.yaml` disponível na raiz do projeto:
+```
+git clone https://github.com/infobarbosa/influxdb-timeseries-demo.git
+cd influxdb-timeseries-demo
+docker compose up -d
+
+```
+
+Acesse a IDE em `http://localhost:8080` e o Grafana em `http://localhost:3000`, e siga o tutorial a partir do [Passo 3](#passo-3-acessar-a-ide).
+
+Para encerrar e remover os containers (os dados do InfluxDB serão descartados):
+```
+docker compose down
+
+```
 
 ---
 
