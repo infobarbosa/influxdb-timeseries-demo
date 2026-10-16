@@ -92,7 +92,7 @@ Todos os comandos do tutorial são executados no terminal do code-server.
 > **ATENÇÃO:**
 > 1. **Região:** Utilize sempre a região **Norte da Virgínia (`us-east-1`)** no Console AWS.
 > 2. **Custos:** A instância EC2 e o volume EBS consomem créditos do seu laboratório AWS Academy. Ao encerrar a aula, garanta que a instância esteja parada (**Stopped**) ou aguarde o desligamento automático da sessão.
-> 3. **Não recrie a máquina:** Se a instância já existir, siga as instruções de [Retomando o laboratório](#retomando-o-laboratório).
+> 3. **Não recrie a máquina para continuar o trabalho:** cada execução do `launch-lab.sh` cria uma instância **nova e vazia**, com data e hora no nome. Se a sua instância já existir, siga as instruções de [Retomando o laboratório](#retomando-o-laboratório). Se precisar mesmo recriar, encerre a anterior (**Instance state** > **Terminate instance**) para não consumir créditos.
 
 #### Passo 1: Abrir o AWS CloudShell
 1. Faça login no Console da AWS através do seu painel do AWS Academy.
@@ -109,7 +109,7 @@ curl -sS https://raw.githubusercontent.com/infobarbosa/influxdb-timeseries-demo/
 O script realizará de forma automatizada:
 - Descoberta da VPC padrão e de uma Subnet pública.
 - Criação do Security Group `lab-influxdb-sg` liberando as portas `8080` (IDE), `3000` (Grafana) e `22` (SSH).
-- Lançamento da instância EC2 `lab-influxdb-timeseries` (`t3.medium`, Ubuntu 24.04, 20 GB gp3).
+- Lançamento de uma nova instância EC2 `lab-influxdb-timeseries-AAAA-MM-DD_HH_MI_SS` (`t3.medium`, sufixo com a data e hora da execução, Ubuntu 24.04, 20 GB gp3).
 - Instalação do Docker e inicialização dos containers `influxdb-lab` e `grafana`.
 - Exibição do IP público e dos links de acesso.
 
@@ -131,9 +131,9 @@ influxdb3 InfluxDB 3 Core, 3.12.0, revision 3ba97c65f1ee4e1f127a8266517d4d2083b7
 ```
 
 #### Retomando o laboratório
-Se a sessão do AWS Academy expirar, a instância será parada. **Não execute o `launch-lab.sh` novamente.**
+Se a sessão do AWS Academy expirar, a instância será parada. **Não execute o `launch-lab.sh` novamente:** ele criaria uma instância nova, sem o seu trabalho.
 1. No Console AWS (`us-east-1`), acesse **EC2** > **Instances**.
-2. Selecione a instância **`lab-influxdb-timeseries`** e clique em **Instance state** > **Start instance**.
+2. Selecione a sua instância **`lab-influxdb-timeseries-<data e hora>`** (se houver mais de uma, a mais recente) e clique em **Instance state** > **Start instance**.
 3. Aguarde o status **Running** e copie o novo **Public IPv4 address** (ele muda a cada reinício).
 4. Acesse `http://<NOVO_IP_PUBLICO>:8080`. Os containers reiniciam automaticamente, os dados do InfluxDB são preservados e o produtor de pedidos volta a escrever.
 
