@@ -22,6 +22,30 @@ O InfluxDB 3 foi **reescrito em Rust** sobre o chamado *stack FDAP*, todo basead
 
 Na prática, isso significa que os seus dados são armazenados **exatamente no mesmo formato** (Parquet) que você encontraria em um data lake — e é por isso que, ao final deste laboratório, conseguiremos abrir os arquivos internos do banco com ferramentas de análise como o **DuckDB** ([Seção 9](#9-por-dentro-do-armazenamento-parquet--arrow-hands-on)).
 
+### Topologia esperada em produção (quem é quem e fluxo PUSH + FlightSQL)
+
+Antes de subir o ambiente de aula, vale visualizar **em qual servidor cada componente roda em produção** e **como a informação trafega** — da escrita de cada evento até a consulta SQL no Grafana ou a leitura aberta via DuckDB:
+
+![Topologia de produção do InfluxDB 3: servidores, fluxo PUSH, FlightSQL e leitura aberta em Parquet](images/arquitetura-producao.png)
+
+Resumindo o fluxo informacional da esquerda para a direita:
+- **Empurrado (*Push* — `HTTP POST /api/v3/write_lp`, setas laranjas):** diferente do Prometheus (que faz *Pull*), no InfluxDB 3 são as **aplicações, agentes como o Telegraf ou scripts CLI** que iniciam a conexão e empurram eventos individuais em *Line Protocol* para o servidor.
+- **Armazenamento aberto (setas azuis e verde-água):** o servidor grava no **WAL**, mantém o buffer recente em **Apache Arrow** (RAM) e persiste snapshots imutáveis em **Apache Parquet** no *Object Store* (Amazon S3 / GCS em produção; disco local no laboratório) — permitindo que ferramentas como **DuckDB** ou **Spark** leiam os dados diretamente sem passar pelo InfluxDB.
+- **Consultado via SQL (setas roxas):** o **Grafana** roda em servidor separado, **não armazena dados** e consulta o InfluxDB 3 via **Arrow Flight (FlightSQL / gRPC)** na porta `:8181`, recebendo os resultados já em formato colunar Arrow.
+
+### InfluxDB 3 × Prometheus (telemetria em tempo real sob alta taxa de ingestão)
+
+Se você também cursou o laboratório de [Prometheus](https://github.com/infobarbosa/prometheus-docker-demo), vale contrastar o papel de cada solução:
+
+| Dimensão | **InfluxDB 3 (Banco de Eventos / Séries Analíticas)** | **Prometheus (Métricas Operacionais)** |
+|---|---|---|
+| **O que representa cada ponto** | Um **evento individual** com seu timestamp exato (ex.: cada pedido) | Uma fotografia periódica de um contador/medidor no instante do scrape |
+| **Modelo de ingestão** | **Push** (Line Protocol via HTTP POST) | **Pull** (scrape HTTP periódico; Pushgateway apenas para batch) |
+| **Como o custo escala sob alta carga** | Escala com o **volume de eventos/s** ingeridos | Escala com a **cardinalidade** (nº de séries), custo `O(1)` por série mesmo a 100k req/s |
+| **Armazenamento em disco** | Colunar aberto (**Apache Arrow** em RAM + **Apache Parquet** em disco) | TSDB próprio (WAL + chunks **Gorilla/XOR** + índice invertido) |
+| **Linguagem de consulta** | **SQL** padrão (via Apache DataFusion) | **PromQL** (`rate`, `increase`, `histogram_quantile`) |
+| **Quando escolher** | Faturamento/contagem exata entre `T1` e `T2`, auditoria, IoT, análises históricas e alta cardinalidade | Monitoramento em tempo real de ritmo (`rate`), saturação e SLOs (`p95`) com baixo custo operacional |
+
 ### Core × Enterprise (importante para este laboratório)
 
 Este laboratório usa a imagem gratuita e open source **InfluxDB 3 Core** (`influxdb:3-core`). Vale conhecer o principal limite dela:
@@ -40,6 +64,8 @@ O protocolo de linha (line protocol) do InfluxDB é um formato simples baseado e
 ```
 <measurement>[,<tag_key>=<tag_value>[,<tag_key>=<tag_value>]] <field_key>=<field_value>[,<field_key>=<field_value>] [<timestamp>]
 ``` 
+
+![Anatomia visual do Line Protocol do InfluxDB 3 destacando measurement, tags, fields, timestamp e separadores](images/anatomia-line-protocol.png)
 
 Onde:
 - `<measurement>` (obrigatório e case-sensitive) <br>
@@ -470,6 +496,8 @@ Quando você escreve um data point, ele **não** vai direto para um arquivo Parq
 2. **Buffer em memória**: os dados ficam em **Apache Arrow** (colunar, em RAM) e já podem ser consultados.
 3. **Persistência (snapshot)**: periodicamente o buffer é escrito como **arquivos Parquet** imutáveis no *object store* (aqui, o disco local).
 
+![Fluxo interno do stack FDAP: do Line Protocol em texto ao Apache Arrow em RAM, Apache Parquet comprimido em disco e leitura aberta via DuckDB](images/fluxo-armazenamento-fdap.png)
+
 > 🧪 **Ajuste didático deste laboratório.** Por padrão, o Core só gera Parquet após acumular **600 arquivos de WAL** (~10 min). Para não esperarmos, a imagem do laboratório define `INFLUXDB3_WAL_FILES_PER_SNAPSHOT=10` e `INFLUXDB3_GEN1_DURATION=1m`, fazendo o Parquet aparecer em segundos. **Nunca use esses valores em produção** — eles geram muitos arquivos pequenos.
 
 Como o produtor de pedidos está escrevendo desde a inicialização do ambiente, os arquivos já existem. Explore a árvore de arquivos do banco:
@@ -662,7 +690,7 @@ O Grafana é uma plataforma open source de visualização amplamente usada para 
 ### Acessando o Grafana
 
 - Abra o navegador e acesse `http://<IP-PUBLICO>:3000` (o mesmo IP da IDE, exibido ao final do `launch-lab.sh`).
-- Usuário: `admin` | Senha: `admin`.
+- Usuário: `admin` | Senha: `admin` (se aparecer a tela solicitando troca de senha no primeiro acesso, clique em **Skip**).
 
 ### Datasource já configurado (SQL via FlightSQL)
 
@@ -670,27 +698,31 @@ O datasource do InfluxDB já está configurado automaticamente via provisionamen
 
 Ele está configurado no modo **SQL**, consistente com o restante do laboratório. Por baixo dos panos, o Grafana conversa com o InfluxDB 3 via **Arrow Flight (gRPC)** — o mesmo protocolo *FlightSQL* mencionado na [introdução](#o-motor-do-influxdb-3-por-que-ele-é-diferente) — recebendo os resultados já em formato colunar Arrow.
 
-Para confirmar, acesse **Connections > Data Sources > influxdb** e clique em **Save & test**: você verá a mensagem de sucesso.
+Para confirmar, acesse **Connections > Data sources > influxdb**, role até o final da página e clique em **Test**: você verá o aviso verde `OK`.
+
+![Datasource influxdb testado com sucesso no Grafana 13 via FlightSQL](images/grafana-01-datasource.png)
 
 > **Curiosidade:** o InfluxDB 3 também aceita **InfluxQL** (linguagem legada do v1/v2) por compatibilidade, via `/api/v3/query_influxql`. Optamos por **SQL** aqui para manter um único dialeto no laboratório inteiro. Se um dia você vir dashboards antigos com `GROUP BY time(10s)`, isso é InfluxQL — o equivalente em SQL é o `date_bin()` que já usamos.
 
 ### Criando um painel simples
 
 1. No menu lateral esquerdo, clique em **Dashboards**.
-2. Clique em **+ Create dashboard**.
-3. No menu lateral direito, na sessão **Panel**, clique em **+**.
-4. No menu lateral direito, no campo **Title** escreva `Vendas Totais`.
-5. Para configurar o novo painel você pode
-  - a. Clicar no botão azul **Configure visualization**, ou
-  - b. Clicar no botão **Edit visualization** em cima de **Title**.
+2. Clique em **New > New dashboard** (ou **+ Create dashboard**).
+3. No menu lateral direito (**Add**), na seção **Panel**, clique no **`+`**.
+4. No menu lateral direito, no campo **Title**, escreva `Vendas Totais`.
+5. Para configurar o novo painel você pode:
+   - a. Clicar no botão azul **Configure visualization** no centro do painel, ou
+   - b. Clicar no botão azul **Configure** acima de **Title**.
+
+![Novo painel Vendas Totais criado no Grafana 13](images/grafana-02-novo-painel.png)
+
 6. A tela agora está dividida em:
-  - parte superior: o preview do painel
-  - parte inferior: duas abas **Queries** e **Transformations**
-  Mantenha a aba **Queries** ativada.
-7. Em **Data source** mantenha **influxdb**.
-8. Combo **Format**: altere para **Time series**.
-9. Ao lado direito do botão azul **Run query** clique em **code**.
-10. Copie a consulta a seguir e cole no editor de código.
+   - parte superior: o preview do painel;
+   - parte inferior: duas abas **Queries** e **Transformations** (mantenha a aba **Queries** ativada).
+7. Em **Data source**, mantenha **influxdb**.
+8. Combo **Format**: altere de **Table** para **Time series**.
+9. Ao lado direito do botão azul **Run query**, clique em **Code**.
+10. Copie a consulta a seguir e cole no editor de código:
 ```sql
 SELECT janela AS time, produto, total_vendas
 FROM (
@@ -705,11 +737,13 @@ FROM (
 ORDER BY time
 ```
 11. Clique em **Run query**.
-12. No topo à direita, abra o combo de seleção do período se selecione **Last 5 minutes**
-13. No painel de configurações à direita, role até encontrar **Connect null values** e marque a opção **Always**.
-14. Ainda no mesmo painel, role até encontrar a sessão **Standard options** e escreva 0 (zero) na caixa **No value**.
-15. No topo à direita clique em **Save**
-16. Clique em **Back to dashboard**.
+12. No topo, abra o seletor de período e escolha **Last 5 minutes**.
+13. No painel direito (**Suggestions**), clique no card de visualização **Time series** para abrir as opções do gráfico; role até **Connect null values** e marque **Always**.
+14. Ainda no mesmo painel, role até a seção **Standard options** e escreva `0` (zero) na caixa **No value**.
+
+![Editor do Painel 1 Vendas Totais no Grafana 13 com Format Time series, modo Code e Connect null values Always](images/grafana-03-painel1-editor.png)
+
+15. No topo à direita, clique em **Back to dashboard** (você também pode clicar em **Save** para salvar o progresso).
 
 > A macro `$__timeFilter(time)` é substituída pelo Grafana pelo intervalo de tempo selecionado no dashboard (canto superior direito).
 
@@ -719,7 +753,7 @@ ORDER BY time
 
 ### Segundo painel
 
-Execute as etapas do primeiro painel, mas desta vez inclua a consulta a seguir:
+De volta ao dashboard, clique no ícone **`+`** no topo do menu lateral direito (**Add**) e em **Panel > `+`**. Execute as mesmas etapas do primeiro painel (por exemplo, com **Title** `Vendas de Computador (Brasil)`), mas desta vez inclua a consulta a seguir:
 ```sql
 SELECT janela AS time, produto, total_vendas
 FROM (
@@ -735,6 +769,14 @@ FROM (
 )
 ORDER BY time
 ```
+
+![Editor do Segundo Painel filtrando vendas de Computador no Brasil no Grafana 13](images/grafana-04-painel2-br-computador.png)
+
+Clique em **Back to dashboard**, depois em **Save** no topo à direita (dê um nome como `Monitoramento de Pedidos - InfluxDB 3`) e em **Exit edit** para visualizar o dashboard completo:
+
+![Dashboard final salvo no Grafana 13 com os dois painéis de vendas lado a lado](images/grafana-05-dashboard-final.png)
+
+> 🔎 **Como ler o dashboard:** o painel à esquerda consolida a evolução de vendas de todos os 10 produtos em janelas de 10 segundos (com separação automática por série graças ao `Format: Time series`); o painel à direita aplica um recorte analítico específico (`pais = 'BR'` e `produto = 'COMPUTADOR'`), mostrando como o SQL do InfluxDB 3 permite filtrar dimensões diretamente sobre os dados individuais em tempo real.
 
 ---
 
