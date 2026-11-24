@@ -260,7 +260,7 @@ Se a sessão do AWS Academy expirar, a instância será parada. **Não execute o
 4. Acesse `http://<NOVO_IP_PUBLICO>:8080`. Os containers reiniciam automaticamente, os dados do InfluxDB são preservados e o produtor de pedidos volta a escrever.
 
 ### 2. O produtor de pedidos
-Assim que o InfluxDB inicializa, o container `influxdb-lab` cria o banco `ecommerce` e inicia um **produtor de pedidos simulados**. A cada segundo ele escreve **3 data points** (um por país) no measurement `pedidos`, usando o Line Protocol:
+Assim que o InfluxDB inicializa, o container `influxdb-lab` cria o banco `ecommerce` e inicia um **produtor de pedidos simulados**. A cada **2 segundos** ele escreve **3 data points** (um por país) no measurement `pedidos`, usando o Line Protocol:
 ```
 pedidos,produto=TABLET,departamento=INFORMATICA,pais=US quantidade=5,preco=4948
 ```
@@ -314,7 +314,7 @@ influxdb3 query \
 
 ```
 
-> Execute o comando algumas vezes: a contagem cresce 3 pedidos por segundo.
+> Execute o comando algumas vezes: a contagem cresce em lotes de 3 pedidos a cada 2 segundos.
 
 ---
 
@@ -371,18 +371,19 @@ No InfluxDB 3, as consultas são feitas em **SQL padrão**. O measurement (`pedi
 influxdb3 query --database <nome> "<SQL>"
 ```
 
-#### Exemplo 4 — Recuperar tudo
+#### Exemplo 4 — Recuperar uma amostra dos registros
 
 ```bash
 influxdb3 query \
   --database ecommerce \
-  "SELECT * FROM pedidos"
+  "SELECT * FROM pedidos LIMIT 50"
 
 ```
 
 **Onde:**
 - `SELECT *` — retorna todas as colunas.
 - `FROM pedidos` — especifica o measurement (tabela).
+- `LIMIT 50` — limita a saída a 50 linhas para não inundar o terminal enquanto o produtor grava continuamente.
 
 ---
 
@@ -574,7 +575,7 @@ influxdb3 query \
 
 ```
 
-> ⏰ **Fuso horário (leia com atenção).** A coluna `time` é **sempre armazenada em UTC**. No exemplo acima usamos o sufixo `-03:00` para dizer "18h no horário de Brasília" — o InfluxDB converte para UTC automaticamente (18h em Brasília = 21h UTC). Se preferir raciocinar direto em UTC, use o sufixo `Z`: `'2026-07-06T21:00:00Z'`. Ajuste a **data** (`2026-07-06`) para o dia em que você gerou os dados.
+> ⏰ **Fuso horário (leia com atenção).** A coluna `time` é **sempre armazenada em UTC**. No exemplo acima usamos o sufixo `-03:00` para dizer "18h no horário de Brasília" — o InfluxDB converte para UTC automaticamente (18h em Brasília = 21h UTC). Se preferir raciocinar direto em UTC, use o sufixo `Z`: `'2026-07-06T21:00:00Z'`. **Ajuste a data (`2026-07-06`) e a faixa de horário (`18:00`–`19:00`) para o dia e a hora em que você está executando o laboratório** — se colar sem ajustar, a consulta retornará uma tabela vazia (`++`).
 
 > ⚠️ **Lembrete do Core:** quanto mais longo o período, mais arquivos Parquet a consulta precisa abrir (veja [Core × Enterprise](#core--enterprise-importante-para-este-laboratório)).
 
@@ -637,7 +638,7 @@ influxdb3 query \
 Como os dados estão **espalhados em vários arquivos** (um ou mais por partição de data), não faz sentido copiar só um — vamos trazer a **árvore inteira** `dbs/` para a pasta de trabalho. Assim analisamos uma cópia estável, enquanto o produtor continua escrevendo no banco:
 
 ```bash
-cp -r /var/lib/influxdb3/demo/dbs ./dbs
+rm -rf ./dbs && cp -r /var/lib/influxdb3/demo/dbs ./dbs
 find dbs -name '*.parquet'
 
 ```
@@ -675,7 +676,7 @@ duckdb -c "SELECT * FROM read_parquet('dbs/**/*.parquet') ORDER BY time DESC LIM
 Agora dá para entender por que "pegar um arquivo só" engana. Veja **quantas linhas há em cada arquivo**:
 
 ```bash
-duckdb -c "SELECT regexp_replace(file_name, '.*/dbs/', '') AS arquivo, num_rows
+duckdb -c "SELECT regexp_replace(file_name, '^(.*/)?dbs/', '') AS arquivo, num_rows
            FROM parquet_file_metadata('dbs/**/*.parquet')
            ORDER BY arquivo;"
 
@@ -720,12 +721,12 @@ GROUP BY coluna;"
 Observe:
 - **`compressao = ZSTD`** em todas as colunas.
 - **`RLE_DICTIONARY`** (dictionary encoding): o Parquet guarda um dicionário com os valores distintos da coluna e substitui cada valor por um pequeno índice inteiro. Nas tags `produto`, `departamento` e `pais`, que têm **poucos valores distintos** (baixa cardinalidade), o dicionário é minúsculo e os índices se repetem muito. É por isso que, em séries temporais, **tags de baixa cardinalidade comprimem muito bem** — e por que alta cardinalidade dói.
-- **Compressão só compensa com volume.** Com os pouquíssimos dados deste laboratório, `comprimido` pode até ficar **maior** que `bruto` em algumas colunas — é o custo fixo (overhead) do ZSTD e dos dicionários em páginas minúsculas. Deixe o produtor rodar por alguns minutos, repita a consulta, e observe a razão `comprimido/bruto` **cair** conforme o volume cresce. Esse é justamente o regime em que o formato colunar brilha.
+- **Compressão só compensa com volume.** Com os pouquíssimos dados deste laboratório, `comprimido` pode até ficar **maior** que `bruto` em algumas colunas — é o custo fixo (overhead) do ZSTD e dos dicionários em páginas minúsculas. Deixe o produtor rodar por alguns minutos, atualize a cópia local (`rm -rf ./dbs && cp -r /var/lib/influxdb3/demo/dbs ./dbs`), repita a consulta e observe a razão `comprimido/bruto` **cair** conforme o volume cresce. Esse é justamente o regime em que o formato colunar brilha.
 
 Uma visão geral, arquivo a arquivo (linhas e *row groups*):
 
 ```bash
-duckdb -c "SELECT regexp_replace(file_name, '.*/dbs/', '') AS arquivo, num_rows, num_row_groups
+duckdb -c "SELECT regexp_replace(file_name, '^(.*/)?dbs/', '') AS arquivo, num_rows, num_row_groups
            FROM parquet_file_metadata('dbs/**/*.parquet')
            ORDER BY arquivo;"
 
