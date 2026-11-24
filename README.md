@@ -4,12 +4,90 @@ Author: Prof. Barbosa<br>
 Contact: infobarbosa@gmail.com<br>
 Github: [infobarbosa](https://github.com/infobarbosa)
 
-O objetivo deste laboratório é oferecer ao aluno um ambiente de familiarização com o modelo de armazenamento de séries temporais utilizando **InfluxDB 3**.
+O objetivo deste laboratório é oferecer ao aluno uma base sólida sobre **séries temporais** e um ambiente prático de familiarização com armazenamento e consulta SQL utilizando **InfluxDB 3**.
 
-## Introdução
+## O que são Séries Temporais?
 
-[InfluxDB](https://docs.influxdata.com/influxdb3/core/) é um banco de dados de série temporal desenvolvido pela InfluxData. A versão 3 traz suporte nativo a **SQL**, tornando as consultas mais acessíveis a quem já conhece bancos de dados relacionais.<br>
-> Fonte: [Wikipedia](https://en.wikipedia.org/wiki/InfluxDB)
+Antes de falar de qualquer banco de dados específico, vale consolidar o conceito de **série temporal** — que é independente do mecanismo de armazenamento.
+
+Uma **série temporal** (*time series*) é uma sequência de observações (pontos de dados) indexadas e analisadas ao longo do tempo. Ela é usada para avaliar o comportamento de **variáveis** ao longo do tempo com o objetivo de **compreender fenômenos**, detectar anomalias ou **prever eventos futuros**.
+
+Um **banco de dados de séries temporais (TSDB)** é um sistema de gerenciamento de banco de dados otimizado especificamente para **ingerir em alta taxa, comprimir, reter e consultar** esse tipo de dado por janelas de tempo. Embora muitos TSDBs sejam classificados fora do modelo relacional tradicional, o ecossistema moderno inclui tanto bancos construídos sobre SQL/PostgreSQL (como o TimescaleDB) quanto bancos colunares nativos com SQL padrão (como o InfluxDB 3).
+
+### Componentes de uma série temporal
+
+Toda pergunta de série temporal combina três elementos:
+
+```
+MEDIDA  +  FATO  +  UNIDADE DE TEMPO
+```
+
+Exemplos:
+- **QUANTIDADE** *(medida)* de **VENDAS** *(fato)* realizadas por **ANO** *(unidade de tempo)*.
+- **TOTAL** *(medida)* de **JOGADORES ONLINE** *(fato)* por **HORA** *(unidade de tempo)*.
+- **TOTAL de bytes trafegados** *(medida)* em um **SWITCH** *(fato)* por **SEGUNDO** *(unidade de tempo)*.
+- **VALOR** *(medida)* de uma **AÇÃO** negociada na bolsa *(fato)* por **DIA** *(unidade de tempo)*.
+
+### Características fundamentais
+
+1. **Ordem lógica pelo timestamp:** o eixo central de organização e consulta é o **tempo em que o fato ocorreu** (*event time*), e não necessariamente a ordem em que o dado chegou à rede. Em sistemas distribuídos, eventos atrasados podem chegar **fora de ordem (*out-of-order*)** — como os pedidos de **2022** que vamos gravar durante o laboratório — e ainda assim são posicionados corretamente na linha do tempo.
+2. **Cadência — Séries Regulares × Irregulares:** nem toda série temporal nasce em intervalos fixos:
+   - **Séries regulares (periódicas):** coletadas em cadência constante (Δt fixo), como temperatura de um motor a cada `1s`, CPU a cada `15s` ou temperatura global por mês.
+   - **Séries irregulares (orientadas a eventos):** registradas somente quando o evento acontece (Δt variável), como pedidos de e-commerce, cliques ou transações financeiras. Na hora da análise, funções de agrupamento temporal como `date_bin()` reamostram esses eventos irregulares em janelas fixas (ex.: vendas a cada `10 seconds`).
+3. **Escrita *append-only* e ciclo de vida:** em séries temporais, o padrão dominante é **inserir novos pontos continuamente** — raramente se executam `UPDATE` ou `DELETE` pontuais. O ciclo de vida dos dados costuma ser gerenciado por **políticas de retenção** (expiração de dados antigos) e **sumarização (*downsampling*)**.
+
+![Componentes de uma série temporal (MEDIDA + FATO + UNIDADE DE TEMPO), comparação entre série regular periódica e série irregular orientada a eventos reamostrada por date_bin(), e destaque de ordem lógica pelo timestamp, escrita append-only e chegada out-of-order](diagramas/00-series-temporais-conceito.svg)
+
+### Exemplos práticos no mundo real
+
+- **Varejo:** um supermercado avalia a evolução de suas vendas por dia ao longo do ano para planejar estoque e sazonalidade.
+- **Automobilismo / IoT:** uma equipe de Fórmula 1 acompanha a temperatura do motor por segundo durante uma corrida.
+- **Games online:** uma produtora monitora a latência do jogo por segundo à medida que mais jogadores entram simultaneamente.
+- **Clima e ciência:** pesquisadores acompanham a evolução da temperatura média global por mês ao longo de décadas.
+- **Redes e infraestrutura:** engenheiros estudam o tráfego de rede em switches e roteadores ao longo do dia para detectar gargalos.
+- **Mercado financeiro:** analistas acompanham a variação de preço e volume negociado de uma ação minuto a minuto.
+
+---
+
+## Introdução ao InfluxDB 3
+
+O [InfluxDB](https://docs.influxdata.com/influxdb3/core/) é um banco de dados de séries temporais desenvolvido pela InfluxData. Na versão 3, foi projetado com armazenamento colunar aberto e suporte nativo a **SQL padrão**, tornando a modelagem e a análise diretamente acessíveis a quem já trabalha com bancos relacionais e ferramentas de dados modernas.
+
+### Características principais
+
+- **Reescrito em Rust sobre o stack FDAP:** alta performance de ingestão e consulta com baixo uso de memória, apoiado em projetos abertos da Apache Software Foundation.
+- **SQL padrão como linguagem principal:** consultas executadas via Apache DataFusion (mantendo também compatibilidade com **InfluxQL** para migração de consultas legadas).
+- **Schema dinâmico (*schema-on-write*):** basta enviar o primeiro data point em *Line Protocol* para o banco criar automaticamente a tabela e as colunas tipadas.
+- **Alta taxa de escrita *append-only* e alta cardinalidade:** graças ao formato colunar em memória (Arrow) e em disco (Parquet), lida com muito mais eficiência com dimensões de alta cardinalidade do que arquiteturas baseadas apenas em índices invertidos tradicionais — suportando métricas, eventos, logs e telemetria via OpenTelemetry.
+- **Interfaces nativas modernas:** **HTTP API** (`/api/v3/write_lp`, `/api/v3/query_sql`) e **Apache Arrow Flight / FlightSQL (gRPC)** na porta `:8181`, além de CLI e bibliotecas clientes oficiais.
+- **Arquitetura *cloud-native* em formato aberto:** separa computação de armazenamento persistindo arquivos **Apache Parquet** em *Object Store* (Amazon S3, GCS, Azure Blob ou disco local), permitindo reutilização direta dos dados por motores analíticos externos (DuckDB, Spark, BI).
+
+### Onde aplicar (e quando não usar)
+
+O InfluxDB 3 se destaca quando há **alta taxa de escrita contínua**, **consultas filtradas ou agregadas por janela de tempo** e necessidade de **formato aberto ou consultas SQL ricas**:
+
+- **IoT e Indústria:** sensores em manufatura, energia, agronegócio, petróleo e gás, frotas e veículos conectados.
+- **Observabilidade e Infraestrutura:** monitoramento de servidores, containers, bancos de dados, redes, aplicações e telemetria OpenTelemetry.
+- **Analytics em Tempo Real e Finanças:** pedidos de e-commerce, cliques, jogos online, cotações de mercado, detecção de anomalias e auditoria temporal de eventos.
+
+![Os três traços em comum dos casos de uso do InfluxDB 3 — escrita contínua append-only, consultas por janela de tempo e armazenamento colunar aberto — seguidos dos seis domínios principais de aplicação, o destaque do cenário de e-commerce deste laboratório e, embaixo, quando não usar](diagramas/01-casos-de-uso.svg)
+
+> **Quando NÃO usar:** evite TSDBs para sistemas transacionais (**OLTP**) com `UPDATE`/`DELETE` frequentes, cadastros relacionais ou transações ACID multi-tabela — nesses casos use um banco relacional (PostgreSQL, MySQL). Também avalie se um monitoramento puramente operacional de infraestrutura (taxas, saturação e SLOs) não é atendido de forma mais leve pelo **Prometheus** (veja o comparativo adiante).
+
+### Panorama de Mercado (DB-Engines)
+
+Para acompanhar a adoção de bancos de séries temporais no mercado, a referência mais usada é o **[DB-Engines Ranking — Time Series DBMS](https://db-engines.com/en/ranking/time+series+dbms)** (atualizado mensalmente). Vale lembrar que o ranking mede **popularidade** (menções técnicas, buscas, vagas de emprego e comunidade) — e **não** performance em benchmark.
+
+Entre os principais representantes da categoria, cada ferramenta ocupa um nicho distinto:
+
+| Banco | Perfil / Arquitetura | Linguagem principal | Onde costuma brilhar |
+|---|---|---|---|
+| **InfluxDB** | Colunar aberto (Rust + FDAP/Parquet na v3) | **SQL** (+ InfluxQL) | IoT, eventos em tempo real, alta cardinalidade, integração com data lakes |
+| **Prometheus** | TSDB próprio (Go, Pull/scrape, chunks Gorilla) | **PromQL** | Observabilidade cloud-native, Kubernetes, métricas operacionais e alertas |
+| **Kdb+** | Colunar em memória / vetorizado (proprietário) | **q** | Mercado financeiro de ultrabaixa latência (trading, tick data) |
+| **TimescaleDB** | Extensão de séries temporais sobre **PostgreSQL** | **SQL** (PostgreSQL) | Quem já usa PostgreSQL e precisa cruzar séries temporais com tabelas relacionais |
+| **QuestDB** | Colunar de baixa latência (Java/C++, SIMD) | **SQL** (com extensões temporais) | Ingestão altíssima em finanças, telemetria e IoT com baixa latência |
+| **Apache Druid** | Banco analítico OLAP distribuído em tempo real | **SQL** | Analytics interativo em larga escala sobre streams (Kafka) e grandes volumes |
 
 ### O motor do InfluxDB 3 (por que ele é diferente)
 
@@ -26,12 +104,22 @@ Na prática, isso significa que os seus dados são armazenados **exatamente no m
 
 Antes de subir o ambiente de aula, vale visualizar **em qual servidor cada componente roda em produção** e **como a informação trafega** — da escrita de cada evento até a consulta SQL no Grafana ou a leitura aberta via DuckDB:
 
-![Topologia de produção do InfluxDB 3: servidores, fluxo PUSH, FlightSQL e leitura aberta em Parquet](images/arquitetura-producao.png)
+![Topologia esperada em produção do InfluxDB 3: produtores (aplicações, Telegraf/OTel e CLI) empurrando via PUSH HTTP POST na porta 8181 para o servidor InfluxDB 3 (Ingester+WAL, Arrow e DataFusion), que grava snapshots Parquet no Object Store S3/GCS lidos diretamente por DuckDB/Spark, enquanto o servidor Grafana consulta via FlightSQL gRPC](diagramas/02-arquitetura-producao.svg)
 
 Resumindo o fluxo informacional da esquerda para a direita:
-- **Empurrado (*Push* — `HTTP POST /api/v3/write_lp`, setas laranjas):** diferente do Prometheus (que faz *Pull*), no InfluxDB 3 são as **aplicações, agentes como o Telegraf ou scripts CLI** que iniciam a conexão e empurram eventos individuais em *Line Protocol* para o servidor.
-- **Armazenamento aberto (setas azuis e verde-água):** o servidor grava no **WAL**, mantém o buffer recente em **Apache Arrow** (RAM) e persiste snapshots imutáveis em **Apache Parquet** no *Object Store* (Amazon S3 / GCS em produção; disco local no laboratório) — permitindo que ferramentas como **DuckDB** ou **Spark** leiam os dados diretamente sem passar pelo InfluxDB.
-- **Consultado via SQL (setas roxas):** o **Grafana** roda em servidor separado, **não armazena dados** e consulta o InfluxDB 3 via **Arrow Flight (FlightSQL / gRPC)** na porta `:8181`, recebendo os resultados já em formato colunar Arrow.
+- **Empurrado (*Push* — `HTTP POST /api/v3/write_lp`, setas laranjas):** diferente do Prometheus (que faz *Pull*), no InfluxDB 3 são as **aplicações, agentes como o Telegraf/OpenTelemetry ou scripts CLI** que iniciam a conexão e empurram eventos individuais em *Line Protocol* para o servidor.
+- **Armazenamento aberto (setas azuis e verde):** o servidor grava no **WAL**, mantém o buffer recente em **Apache Arrow** (RAM) e persiste snapshots imutáveis em **Apache Parquet** no *Object Store* (Amazon S3 / GCS em produção; disco local no laboratório) — permitindo que ferramentas como **DuckDB** ou **Spark** leiam os dados diretamente sem passar pelo InfluxDB.
+- **Consultado via SQL (setas azuis para o Grafana):** o **Grafana** roda em servidor separado, **não armazena dados** e consulta o InfluxDB 3 via **Arrow Flight (FlightSQL / gRPC)** na porta `:8181`, recebendo os resultados já em formato colunar Arrow.
+
+### Padrões arquiteturais e ecossistema moderno
+
+Em produção, o InfluxDB 3 raramente trabalha sozinho. Os três padrões abaixo resumem como ele se encaixa no ecossistema atual (substituindo ferramentas legadas de gerações antigas, como Chronograf e Kapacitor, por **Grafana**, **OpenTelemetry/Telegraf**, **Kafka + Spark/Flink** e **Object Store em Parquet**):
+
+![Três padrões arquiteturais modernos com InfluxDB 3: Padrão A com Telegraf/OpenTelemetry empurrando via PUSH para InfluxDB 3 e Grafana; Padrão B de streaming em alta escala com Kafka e Spark/Flink fazendo PUSH para InfluxDB 3 enquanto Prometheus faz PULL em /metrics dos microsserviços; e Padrão C de arquitetura aberta Lakehouse com Parquet no S3/GCS lido direto por DuckDB, Spark e BI](diagramas/03-padroes-arquiteturais.svg)
+
+- **Padrão A — IoT e Infraestrutura:** agentes leves (**Telegraf** ou **OpenTelemetry Collector**) coletam métricas de sensores, servidores e bancos relacionais, agrupam em lotes e empurram (**PUSH**) para o InfluxDB 3; o **Grafana** centraliza dashboards e alertas.
+- **Padrão B — Streaming em Alta Escala (separando PUSH × PULL):** eventos de negócio passam por **Apache Kafka** e processamento em streaming (**Spark Structured Streaming** ou **Apache Flink**) antes de serem gravados via **PUSH** no InfluxDB 3. Repare no detalhe arquitetural importante: quando o **Prometheus** coexiste nesse ambiente, ele **não recebe PUSH contínuo** dos microsserviços — ele faz **PULL (*scrape* periódico)** no endpoint `/metrics`, e o Grafana unifica ambas as fontes (SQL + PromQL) no mesmo painel.
+- **Padrão C — Arquitetura Aberta (*Lakehouse*):** como o InfluxDB 3 persiste arquivos **Apache Parquet** no Object Store (S3/GCS), equipes de dados e ciência de dados podem ler o histórico diretamente com **DuckDB**, **Spark** ou ferramentas de BI sem competir com as consultas operacionais do banco.
 
 ### InfluxDB 3 × Prometheus (telemetria em tempo real sob alta taxa de ingestão)
 
@@ -50,7 +138,7 @@ Se você também cursou o laboratório de [Prometheus](https://github.com/infoba
 
 Este laboratório usa a imagem gratuita e open source **InfluxDB 3 Core** (`influxdb:3-core`). Vale conhecer o principal limite dela:
 
-> ⚠️ **Sem compactação no Core.** O InfluxDB 3 **Core** foi otimizado para dados recentes: ele grava os dados em **muitos arquivos Parquet pequenos** (um ou mais por janela de tempo) e **não os reorganiza** depois. Para proteger o servidor, cada consulta pode abrir no máximo um certo número de arquivos (parâmetro `--query-file-limit`); consultas sobre períodos longos, que envolvem muitos arquivos, podem ser recusadas. O **InfluxDB 3 Enterprise** inclui um *compactor* que funde esses arquivos em blocos maiores, viabilizando consultas eficientes sobre qualquer intervalo histórico.
+> ⚠️ **Sem compactação no Core.** O InfluxDB 3 **Core** foi otimizado para dados recentes: ele grava os dados em **muitos arquivos Parquet pequenos** (um ou mais por janela de tempo) e **não os reorganiza** depois. Para proteger o servidor, cada consulta pode abrir no máximo um certo número de arquivos (parâmetro `--query-file-limit`); consultas sobre períodos longos, que envolvem muitos arquivos, podem ser recusadas. O **InfluxDB 3 Enterprise** inclui um *compactor* que funde esses arquivos em blocos maiores, além de políticas avançadas de retenção, replicação e alta disponibilidade, viabilizando consultas eficientes sobre qualquer intervalo histórico.
 >
 > Nas primeiras versões do Core havia ainda uma janela fixa de consulta de ~72 horas; ela foi removida. Hoje, dados com timestamps antigos (como os pedidos de **2022** que escreveremos adiante) são aceitos **e** consultáveis.
 
@@ -65,11 +153,11 @@ O protocolo de linha (line protocol) do InfluxDB é um formato simples baseado e
 <measurement>[,<tag_key>=<tag_value>[,<tag_key>=<tag_value>]] <field_key>=<field_value>[,<field_key>=<field_value>] [<timestamp>]
 ``` 
 
-![Anatomia visual do Line Protocol do InfluxDB 3 destacando measurement, tags, fields, timestamp e separadores](images/anatomia-line-protocol.png)
+![Anatomia visual de um data point no Line Protocol do InfluxDB 3 destacando measurement, tag set, field set, timestamp em nanossegundos UTC e a diferença crítica entre vírgula e espaço como separadores](diagramas/04-anatomia-line-protocol.svg)
 
 Onde:
 - `<measurement>` (obrigatório e case-sensitive) <br>
-    - Tipo `string` que representa o nome da medida. 
+    - Tipo `string` que representa o nome da medida (vira o nome da tabela no SQL). 
 
 - `<tag_key>=<tag_value>` (não obrigatório, porém case-sensitive) <br>
     - Tags representadas por pares chave-valor para o data point.<br> 
@@ -98,7 +186,15 @@ A distinção entre **tags** e **fields** é central em bancos de séries tempor
 
 > **Cardinalidade** é o número de combinações distintas de séries (measurement + conjunto de tags). Tags com muitos valores possíveis (ex.: `id_do_pedido`, IP, e-mail) causam **alta cardinalidade** — historicamente o principal gargalo de séries temporais. Regra prática: use como tag apenas o que você vai **filtrar/agrupar**; o resto é field.
 
-> **No InfluxDB 3 isso mudou de fundo.** O armazenamento agora é **colunar (Apache Arrow em memória, Apache Parquet em disco)**. A separação tag/field continua no Line Protocol, mas fisicamente cada tag e cada field vira uma **coluna** tipada e comprimida. Por isso o v3 tolera cardinalidade muito melhor que o v1/v2 e permite **SQL padrão** sobre os dados. Vamos ver esses arquivos Parquet na [Seção 9](#9-por-dentro-do-armazenamento-parquet--arrow-hands-on).
+> **No InfluxDB 3 isso mudou de fundo.** O armazenamento agora é **colunar (Apache Arrow em memória, Apache Parquet em disco)**. A separação tag/field continua no Line Protocol, mas fisicamente cada tag e cada field vira uma **coluna** tipada e comprimida. Por isso o v3 tolera cardinalidade muito melhor que arquiteturas anteriores e permite **SQL padrão** sobre os dados. Vamos ver esses arquivos Parquet na [Seção 9](#9-por-dentro-do-armazenamento-parquet--arrow-hands-on).
+
+### Schema dinâmico (*schema-on-write*)
+
+Diferente de bancos relacionais tradicionais, no InfluxDB 3 você **não precisa executar `CREATE TABLE`** antes de gravar:
+
+- **Criação automática:** ao escrever o primeiro data point em um *measurement*, o banco cria a tabela e todas as colunas correspondentes às tags e aos fields enviados.
+- **Evolução flexível:** se um novo data point chegar com uma nova tag ou um novo field (ex.: `desconto=50`), a coluna é adicionada automaticamente ao catálogo; nas linhas em que aquela coluna não foi enviada (como a coluna `departamento` nos pedidos manuais da Seção 5), o valor fica como **`NULL`** — armazenado no Parquet com um *validity bitmap* mínimo, sem desperdiçar espaço com texto vazio.
+- **Tipagem fixa após a primeira escrita:** uma vez que um field é gravado com um tipo (por exemplo `preco=2000` como `Float` ou `Integer`), escritas futuras com tipo incompatível na mesma coluna (ex.: uma string `preco="caro"`) são rejeitadas para preservar a consistência do schema colunar.
 
 **Exemplo**:
 ```
@@ -496,7 +592,7 @@ Quando você escreve um data point, ele **não** vai direto para um arquivo Parq
 2. **Buffer em memória**: os dados ficam em **Apache Arrow** (colunar, em RAM) e já podem ser consultados.
 3. **Persistência (snapshot)**: periodicamente o buffer é escrito como **arquivos Parquet** imutáveis no *object store* (aqui, o disco local).
 
-![Fluxo interno do stack FDAP: do Line Protocol em texto ao Apache Arrow em RAM, Apache Parquet comprimido em disco e leitura aberta via DuckDB](images/fluxo-armazenamento-fdap.png)
+![Caminho de escrita e armazenamento no stack FDAP: o Line Protocol é registrado no WAL em disco e bufferizado em Apache Arrow na memória; periodicamente o snapshot gera arquivos Apache Parquet imutáveis em dbs/, lidos pelo DataFusion (SQL) e diretamente por DuckDB ou Spark](diagramas/05-fluxo-armazenamento-fdap.svg)
 
 > 🧪 **Ajuste didático deste laboratório.** Por padrão, o Core só gera Parquet após acumular **600 arquivos de WAL** (~10 min). Para não esperarmos, a imagem do laboratório define `INFLUXDB3_WAL_FILES_PER_SNAPSHOT=10` e `INFLUXDB3_GEN1_DURATION=1m`, fazendo o Parquet aparecer em segundos. **Nunca use esses valores em produção** — eles geram muitos arquivos pequenos.
 
@@ -802,7 +898,12 @@ Sugestões para continuar os estudos, organizadas por tema.
 - [DuckDB — documentação](https://duckdb.org/docs/) e o guia [Reading and Writing Parquet](https://duckdb.org/docs/data/parquet/overview).
 
 ### Séries temporais e bancos colunares (conceitos)
+- [DB-Engines Ranking — Time Series DBMS](https://db-engines.com/en/ranking/time+series+dbms) — panorama atualizado de popularidade de bancos de séries temporais.
 - Jensen, Pedersen & Thomsen — *[Time Series Management Systems: A Survey](https://arxiv.org/abs/1710.01792)* (survey acadêmico).
+- Bader, Kopp & Becker — *[Survey and Comparison of Open Source Time Series Databases](https://www.researchgate.net/publication/315838456_Survey_and_Comparison_of_Open_Source_Time_Series_Databases)* (ResearchGate).
+- Di Martino et al. — *[A Comparison of Time Series Databases for Storing Water Quality Data](https://www.researchgate.net/publication/332482421_A_Comparison_of_Time_Series_Databases_for_Storing_Water_Quality_Data)* (ResearchGate).
+- Dunning & Friedman — *[Time Series Databases](https://www.researchgate.net/publication/286732446_Time_Series_Databases)* (ResearchGate).
+- PUC-Rio — *[Conceitos Fundamentais de Séries Temporais (PDF)](https://www.maxwell.vrac.puc-rio.br/4244/4244_5.PDF)* (base teórica).
 - Abadi et al. — *[The Design and Implementation of Modern Column-Oriented Database Systems](https://stratos.seas.harvard.edu/files/stratos/files/columnstoresfntdbs.pdf)* (leitura de referência sobre colunar).
 - [Awesome Time Series Database](https://github.com/xephonhq/awesome-time-series-database) — panorama de ferramentas do ecossistema.
 
