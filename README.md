@@ -123,7 +123,7 @@ Em produção, o InfluxDB 3 raramente trabalha sozinho. Os três padrões abaixo
 
 ### InfluxDB 3 × Prometheus (telemetria em tempo real sob alta taxa de ingestão)
 
-Se você também cursou o laboratório de [Prometheus](https://github.com/infobarbosa/prometheus-docker-demo), vale contrastar o papel de cada solução:
+Se você também cursou o laboratório de [Prometheus](https://github.com/labzinho/prometheus-docker-demo), vale contrastar o papel de cada solução:
 
 | Dimensão | **InfluxDB 3 (Banco de Eventos / Séries Analíticas)** | **Prometheus (Métricas Operacionais)** |
 |---|---|---|
@@ -225,7 +225,7 @@ Todos os comandos do tutorial são executados no terminal do code-server.
 #### Passo 2: Executar o script de provisionamento
 No terminal do CloudShell, execute:
 ```
-curl -sS https://raw.githubusercontent.com/infobarbosa/influxdb-timeseries-demo/main/launch-lab.sh | bash
+curl -sS https://raw.githubusercontent.com/labzinho/influxdb-timeseries-demo/main/launch-lab.sh | bash
 ```
 
 O script realizará de forma automatizada:
@@ -921,7 +921,7 @@ Fora do horário de aula, é possível executar o mesmo ambiente em qualquer má
 
 Faça o clone deste repositório e inicialize os containers com o `compose.yaml` disponível na raiz do projeto:
 ```
-git clone https://github.com/infobarbosa/influxdb-timeseries-demo.git
+git clone https://github.com/labzinho/influxdb-timeseries-demo.git
 cd influxdb-timeseries-demo
 docker compose up -d
 

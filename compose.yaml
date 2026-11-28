@@ -2,7 +2,7 @@ services:
   # code-server + InfluxDB 3 Core + produtor de pedidos
   influxdb-lab:
     container_name: influxdb-lab
-    image: ghcr.io/infobarbosa/influxdb-lab-docker-image:latest
+    image: ghcr.io/labzinho/influxdb-lab-docker-image:latest
     ports:
       - "8080:8080"
 

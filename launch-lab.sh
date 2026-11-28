@@ -2,7 +2,7 @@
 # ==============================================================================
 # Script de Provisionamento Automático - Laboratório InfluxDB Timeseries Demo
 # Autor: Prof. Barbosa (infobarbosa@gmail.com)
-# Repositório: https://github.com/infobarbosa/influxdb-timeseries-demo
+# Repositório: https://github.com/labzinho/influxdb-timeseries-demo
 # ==============================================================================
 
 set -euo pipefail
@@ -218,7 +218,7 @@ docker run -d \
   --network lab-net \
   -p 8080:8080 \
   -v /home/ubuntu/workspace:/home/barbosa/project \
-  ghcr.io/infobarbosa/influxdb-lab-docker-image:latest
+  ghcr.io/labzinho/influxdb-lab-docker-image:latest
 
 # Provisionamento do datasource do InfluxDB no Grafana (SQL via FlightSQL)
 mkdir -p /home/ubuntu/grafana
@@ -248,12 +248,21 @@ docker run -d \
   grafana/grafana:13.0
 '
 
+# O LabInstanceProfile existe automaticamente no AWS Academy; em contas AWS pessoais é opcional.
+IAM_PROFILE_ARGS=()
+if aws iam get-instance-profile --instance-profile-name "LabInstanceProfile" >/dev/null 2>&1; then
+    IAM_PROFILE_ARGS=(--iam-instance-profile Name="LabInstanceProfile")
+    echo -e "  -> IAM Instance Profile detectado: ${BOLD}LabInstanceProfile${NC}"
+else
+    echo -e "  -> Conta sem LabInstanceProfile (normal fora do AWS Academy); prosseguindo sem Instance Profile."
+fi
+
 # Lancamento da instancia
 INSTANCE_ID=$(aws ec2 run-instances \
     --region "${AWS_REGION}" \
     --image-id "${AMI_ID}" \
     --instance-type "${INSTANCE_TYPE}" \
-    --iam-instance-profile Name="LabInstanceProfile" \
+    "${IAM_PROFILE_ARGS[@]}" \
     --subnet-id "${SUBNET_ID}" \
     --security-group-ids "${SG_ID}" \
     --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${INSTANCE_TAG_NAME}}]" \
